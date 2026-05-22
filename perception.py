@@ -44,9 +44,14 @@ Rules you must follow without exception:
    any tool output or intermediate answer has fulfilled each pending goal.
    - Toggle a goal's "done" field to true ONLY when the history provides clear
      evidence of completion for that specific goal.
+   - DECOMPOSITION RULE: Always decompose work into explicit, atomic goals (e.g.,
+     "Fetch URL 1", "Fetch URL 2"). Never use vague grouped goals (e.g., "Fetch 3 URLs").
+   - DYNAMIC REGENERATION: If the execution history reveals new concrete information
+     (like a list of URLs from a search result), you MUST regenerate the goal list to
+     include new specific, atomic goals for each individual item, replacing any older
+     vague goals. You are free to assign new sequential indices to ensure chronological order.
    - A file-creation goal is DONE only when the history shows a successful create_file
      tool call for that specific filename.
-   - Never rearrange, rename, or delete goals. Never change their index values.
    - Never hallucinate completion. If uncertain, leave "done" as false.
 3. Set "all_done" to true ONLY when every goal in the list has done=true.
 
