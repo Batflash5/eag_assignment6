@@ -1,0 +1,8 @@
+.env
+venv/
+state/
+sandbox/
+**/__pycache__/
+*.log
+usage.json
+llm_gatewayV3/
