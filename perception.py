@@ -34,10 +34,18 @@ Rules you must follow without exception:
    milestones necessary to fulfill the user request. Each milestone must be small,
    concrete, and independently verifiable.
    - CRITICAL: You MUST preserve all specific URLs, file paths, IDs, and exact terms from the user query in the goal text. Never abstract them away (e.g., write "Fetch https://en.wikipedia.org/wiki/..." instead of "Fetch the Wikipedia page").
+   - FILE OUTPUT RULE: If the user asks for a reminder, calendar entry, note, schedule,
+     or any persistent output that should be saved, decompose it into ONE goal per file.
+     Each goal must specify:
+       * The exact filename (derive from event name + date)
+       * The content to write
+     Use the create_file tool for these goals. Never bundle multiple files into one goal.
 2. If prior goals list is NON-EMPTY, review the execution history and audit whether
    any tool output or intermediate answer has fulfilled each pending goal.
    - Toggle a goal's "done" field to true ONLY when the history provides clear
      evidence of completion for that specific goal.
+   - A file-creation goal is DONE only when the history shows a successful create_file
+     tool call for that specific filename.
    - Never rearrange, rename, or delete goals. Never change their index values.
    - Never hallucinate completion. If uncertain, leave "done" as false.
 3. Set "all_done" to true ONLY when every goal in the list has done=true.

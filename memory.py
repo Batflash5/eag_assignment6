@@ -201,7 +201,7 @@ async def remember_query_intent(user_query: str) -> None:
                 created_at=now,
             )
             append_item(item)
-            logger.info("Pre-flight memory extracted: %s", item.descriptor)
+            logger.info("[MEMORY WRITE] Parsed from query → saved: %s", item.descriptor)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not create MemoryItem from %s: %s", raw, exc)
 

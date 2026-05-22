@@ -59,8 +59,14 @@ CONSTRAINTS (these are ABSOLUTE rules — no exceptions):
       (e.g. only activity listings are attached, but the goal is to fetch weather):
         → A tool call (Option B) is permitted to fetch the missing data.
         → Do NOT re-fetch data that is already covered by an attached artifact.
-2. NEVER submit an empty arguments dict {} for any tool.
-3. NEVER use artifact handles as argument values.
+2. FILE OUTPUT RULE: If the goal involves saving a reminder, calendar entry, note,
+   schedule, or any persistent output to a file:
+   → You MUST use the create_file tool (Option B). Do NOT return a terminal answer.
+   → Extract the filename directly from the goal text.
+   → Write the full, human-readable reminder/note content as the file body.
+   → One create_file call per goal — never bundle multiple files into one call.
+3. NEVER submit an empty arguments dict {} for any tool.
+4. NEVER use artifact handles as argument values.
 """
 
 
