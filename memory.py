@@ -68,9 +68,16 @@ def _read_memory() -> list[dict[str, Any]]:
     """Return raw memory list from disk; safe against concurrent reads."""
     try:
         text = MEMORY_FILE.read_text(encoding="utf-8")
+        if not text.strip():
+            # File exists but is empty — reinitialize silently
+            _write_memory([])
+            return []
         return json.loads(text)
-    except (json.JSONDecodeError, FileNotFoundError) as exc:
-        logger.warning("Could not read memory file (%s); returning empty.", exc)
+    except json.JSONDecodeError as exc:
+        logger.warning("Memory file is malformed (%s); reinitializing.", exc)
+        _write_memory([])
+        return []
+    except FileNotFoundError:
         return []
 
 

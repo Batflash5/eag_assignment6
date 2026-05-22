@@ -10,15 +10,13 @@ import hashlib
 import json
 import logging
 import re
-import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from schemas import MemoryItem, ToolCall
+from schemas import ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -161,12 +159,12 @@ def _compute_sha256(data: bytes) -> str:
 
 def _write_artifact(payload: str, origin_tool: str) -> str:
     """
-    Persist a large payload to disk and register it in memory.
+    Persist a large payload to disk and return a lightweight reference descriptor.
 
-    Returns a lightweight reference token descriptor string.
+    Artifacts are intentionally NOT registered in memory.json — they are
+    session-scoped (wiped on next boot) and are already discoverable via the
+    'art:<hash>' handle that gets embedded in the agent history string.
     """
-    from memory import append_item  # local import to avoid circular dependency
-
     raw_bytes = payload.encode("utf-8")
     hash_val = _compute_sha256(raw_bytes)
     artifact_id = f"art:{hash_val}"
@@ -181,18 +179,6 @@ def _write_artifact(payload: str, origin_tool: str) -> str:
     meta = {"size_bytes": len(raw_bytes), "origin_tool": origin_tool}
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    # Register in memory
-    item = MemoryItem(
-        id=str(uuid.uuid4()),
-        kind="tool_outcome",
-        keywords=["artifact", origin_tool, hash_val[:8]],
-        descriptor=f"Large tool output from {origin_tool}",
-        value={"size_bytes": len(raw_bytes), "origin_tool": origin_tool},
-        artifact_id=artifact_id,
-        created_at=datetime.utcnow(),
-    )
-    append_item(item)
-
     preview = payload[:200]
     descriptor = (
         f"Executed tool successfully. Large payload cached to handle: {artifact_id}. "
@@ -200,6 +186,7 @@ def _write_artifact(payload: str, origin_tool: str) -> str:
     )
     logger.info("Artifact saved: %s (%d bytes)", artifact_id, len(raw_bytes))
     return descriptor
+
 
 
 # ---------------------------------------------------------------------------

@@ -21,17 +21,6 @@ GATEWAY_URL = "http://localhost:8101/v1/chat"
 STATE_DIR = Path("state")
 ARTIFACTS_DIR = STATE_DIR / "artifacts"
 
-# Keywords that signal content extraction / synthesis tasks
-_SYNTHESIS_TERMS: frozenset[str] = frozenset(
-    {
-        "summarize", "summarise", "summary", "summarization",
-        "synthesize", "synthesise", "synthesis",
-        "extract", "extraction",
-        "write report", "report",
-        "analyze", "analyse", "analysis",
-        "describe", "description",
-    }
-)
 
 
 # ---------------------------------------------------------------------------
@@ -59,21 +48,25 @@ ARGUMENT EXTRACTION RULES (mandatory):
 - NEVER submit an empty arguments dict {} for any tool.
 - NEVER use placeholder strings. NEVER use artifact handles as argument values.
 
-CONSTRAINTS:
-- If an [ATTACHED ARTIFACT CONTENT] block is present, READ it and use its
-  content directly — never re-fetch it via a tool.
+CONSTRAINTS (these are ABSOLUTE rules — no exceptions):
+1. When [ATTACHED ARTIFACT CONTENT] is present, first judge relevance:
+   a. RELEVANT — the artifact(s) contain data that addresses the active goal (even partially
+      or approximately, e.g. monthly weather when Saturday is asked for):
+        → You MUST produce a TERMINAL ANSWER (Option A).
+        → Tool calls are FORBIDDEN. Synthesize the best answer you can from the available
+          data. Do NOT search for a "more specific" version of data you already have.
+   b. NOT RELEVANT — the artifact(s) are entirely unrelated to the active goal
+      (e.g. only activity listings are attached, but the goal is to fetch weather):
+        → A tool call (Option B) is permitted to fetch the missing data.
+        → Do NOT re-fetch data that is already covered by an attached artifact.
+2. NEVER submit an empty arguments dict {} for any tool.
+3. NEVER use artifact handles as argument values.
 """
 
 
 # ---------------------------------------------------------------------------
-# Force-Attach check
+# Force-Attach helpers
 # ---------------------------------------------------------------------------
-
-def _goal_implies_synthesis(goal_text: str) -> bool:
-    """Return True if the goal text contains synthesis/extraction keywords."""
-    lower = goal_text.lower()
-    return any(term in lower for term in _SYNTHESIS_TERMS)
-
 
 def _load_artifact_content(artifact_id: str) -> str | None:
     """
@@ -134,16 +127,16 @@ async def run_decision(
     messages: list[dict[str, str]] = []
 
     # ------------------------------------------------------------------
-    # Force-Attach Safety Net
+    # Force-Attach: always inject every artifact referenced in history.
+    # The decision model's system prompt instructs it to use attached
+    # content directly and avoid re-fetching — so attaching unconditionally
+    # is correct for both synthesis goals AND action goals, and eliminates
+    # the fragile static keyword gate that was here before.
     # ------------------------------------------------------------------
     artifact_injection: str = ""
-    art_ids: list[str] = []
+    art_ids: list[str] = _collect_artifact_ids_from_history(history)
 
-    # 1. If the goal implies synthesis, scan history for all cached artifacts
-    if _goal_implies_synthesis(active_goal.text):
-        art_ids.extend(_collect_artifact_ids_from_history(history))
-
-    # 2. If the perception model explicitly attached an artifact, always load it
+    # Also honour any artifact the perception model explicitly pinned
     if active_goal.attach_artifact_id:
         art_ids.append(active_goal.attach_artifact_id)
 

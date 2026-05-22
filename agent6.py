@@ -54,9 +54,22 @@ def _reset_state() -> None:
     initialize_state() will recreate the directory tree immediately after.
     """
     state_dir = Path("state")
-    if state_dir.exists():
-        shutil.rmtree(state_dir)
-        logging.getLogger("agent6").info("[BOOT] Cleared previous state/ directory.")
+    if not state_dir.exists():
+        return
+
+    # Only wipe session-specific data — preserve memory.json so that
+    # cross-session persistent memory survives across runs.
+    artifacts_dir = state_dir / "artifacts"
+    if artifacts_dir.exists():
+        shutil.rmtree(artifacts_dir)
+
+    log_file = state_dir / "agent6.log"
+    if log_file.exists():
+        log_file.unlink()
+
+    logging.getLogger("agent6").info(
+        "[BOOT] Cleared session artifacts and log. Memory preserved."
+    )
 
 logger = logging.getLogger("agent6")
 
