@@ -368,7 +368,7 @@ async def run_agent(user_query: str) -> None:
     )
 
     print("\n" + "=" * 60)
-    print("AXIOM LEARNING OS — SESSION 6 — FINAL ANSWER")
+    print("FINAL ANSWER")
     print("=" * 60)
     print(final_answer)
     print("=" * 60 + "\n")

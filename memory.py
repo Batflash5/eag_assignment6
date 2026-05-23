@@ -30,18 +30,108 @@ MEMORY_FILE = STATE_DIR / "memory.json"
 # Standard English stopwords for token-intersection filtering
 _STOPWORDS: frozenset[str] = frozenset(
     {
-        "a", "an", "the", "and", "or", "but", "if", "in", "on", "at", "to",
-        "for", "of", "with", "by", "from", "is", "was", "are", "were", "be",
-        "been", "being", "have", "has", "had", "do", "does", "did", "will",
-        "would", "could", "should", "may", "might", "shall", "can", "not",
-        "no", "nor", "so", "yet", "both", "either", "neither", "also", "as",
-        "that", "this", "these", "those", "it", "its", "i", "me", "my",
-        "we", "our", "you", "your", "he", "she", "they", "them", "his",
-        "her", "their", "what", "which", "who", "whom", "when", "where",
-        "why", "how", "all", "each", "every", "any", "some", "such",
-        "into", "than", "then", "just", "about", "up", "out", "over",
-        "after", "before", "through", "during", "without", "within",
-        "s", "t", "re", "ve", "ll", "d", "m",
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "if",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "is",
+        "was",
+        "are",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "not",
+        "no",
+        "nor",
+        "so",
+        "yet",
+        "both",
+        "either",
+        "neither",
+        "also",
+        "as",
+        "that",
+        "this",
+        "these",
+        "those",
+        "it",
+        "its",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "she",
+        "they",
+        "them",
+        "his",
+        "her",
+        "their",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "when",
+        "where",
+        "why",
+        "how",
+        "all",
+        "each",
+        "every",
+        "any",
+        "some",
+        "such",
+        "into",
+        "than",
+        "then",
+        "just",
+        "about",
+        "up",
+        "out",
+        "over",
+        "after",
+        "before",
+        "through",
+        "during",
+        "without",
+        "within",
+        "s",
+        "t",
+        "re",
+        "ve",
+        "ll",
+        "d",
+        "m",
     }
 )
 
@@ -49,6 +139,7 @@ _STOPWORDS: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 # Initialization
 # ---------------------------------------------------------------------------
+
 
 def initialize_state() -> None:
     """Create state directory topology and memory file if they do not exist."""
@@ -63,6 +154,7 @@ def initialize_state() -> None:
 # ---------------------------------------------------------------------------
 # Low-level I/O helpers (atomic)
 # ---------------------------------------------------------------------------
+
 
 def _read_memory() -> list[dict[str, Any]]:
     """Return raw memory list from disk; safe against concurrent reads."""
@@ -101,6 +193,7 @@ def _json_serial(obj: Any) -> str:
 # Public write helpers
 # ---------------------------------------------------------------------------
 
+
 def append_item(item: MemoryItem) -> None:
     """Append a single MemoryItem to persistent storage."""
     records = _read_memory()
@@ -113,6 +206,7 @@ def append_item(item: MemoryItem) -> None:
 # Token helpers
 # ---------------------------------------------------------------------------
 
+
 def _tokenize(text: str) -> set[str]:
     """Lowercase, strip non-alphanumeric chars, remove stopwords."""
     raw_tokens = re.findall(r"[a-z0-9]+", text.lower())
@@ -123,6 +217,7 @@ def _tokenize(text: str) -> set[str]:
 # Boot-time extraction
 # ---------------------------------------------------------------------------
 
+
 async def remember_query_intent(user_query: str) -> None:
     """
     Call the gateway with auto_route='memory' to extract any explicitly
@@ -131,11 +226,12 @@ async def remember_query_intent(user_query: str) -> None:
     system_prompt = (
         "You are a fact extractor. Scan the user's message for any explicitly "
         "declared facts, preferences, or personal information "
-        "(e.g., 'My mom's birthday is May 25', 'I prefer metric units', "
+        "(e.g., 'I prefer metric units', "
         "'My name is Alice'). "
         "For each such item, output a JSON array of objects with these fields: "
         '{"kind": "fact"|"preference", "keywords": [list of lowercase keywords], '
         '"descriptor": "short label", "value": {"raw": "the extracted text"}}. '
+        "Do not search the internet at any point. Your only job is to extract information from the user's query."
         "If you find nothing relevant, output an empty JSON array []. "
         "Output ONLY valid JSON — no markdown fences, no prose."
     )
@@ -210,7 +306,10 @@ async def remember_query_intent(user_query: str) -> None:
 # Read phase — Token-Intersection Matcher
 # ---------------------------------------------------------------------------
 
-def read_keyword_match(query: str, history: list[str] | None = None) -> list[MemoryItem]:
+
+def read_keyword_match(
+    query: str, history: list[str] | None = None
+) -> list[MemoryItem]:
     """
     Lightweight token-intersection match over all memory records.
 

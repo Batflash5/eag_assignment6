@@ -34,22 +34,55 @@ Rules you must follow without exception:
    milestones necessary to fulfill the user request. Each milestone must be small,
    concrete, and independently verifiable.
    - CRITICAL: You MUST preserve all specific URLs, file paths, IDs, and exact terms from the user query in the goal text. Never abstract them away (e.g., write "Fetch https://en.wikipedia.org/wiki/..." instead of "Fetch the Wikipedia page").
-   - FILE OUTPUT RULE: If the user asks for a reminder, calendar entry, note, schedule,
-     or any persistent output that should be saved, decompose it into ONE goal per file.
+   - FILE OUTPUT RULE : If the user asks for a reminder, calendar entry, note, schedule, decompose it into ONE goal per file.
      Each goal must specify:
        * The exact filename (derive from event name + date)
        * The content to write
      Use the create_file tool for these goals. Never bundle multiple files into one goal.
 2. If prior goals list is NON-EMPTY, review the execution history and audit whether
    any tool output or intermediate answer has fulfilled each pending goal.
-   - Toggle a goal's "done" field to true ONLY when the history provides clear
-     evidence of completion for that specific goal.
-   - DECOMPOSITION RULE: Always decompose work into explicit, atomic goals (e.g.,
-     "Fetch URL 1", "Fetch URL 2"). Never use vague grouped goals (e.g., "Fetch 3 URLs").
-   - DYNAMIC REGENERATION: If the execution history reveals new concrete information
-     (like a list of URLs from a search result), you MUST regenerate the goal list to
-     include new specific, atomic goals for each individual item, replacing any older
-     vague goals. You are free to assign new sequential indices to ensure chronological order.
+   - Toggle a goal's "done" field to true when the execution history or attached
+     artifacts provide enough information for the goal to be reasonably answered.
+
+   - A goal does NOT require perfect or authoritative information to be marked done.
+     Best-effort completion based on retrieved context is sufficient.
+
+   - If a prior tool result already contains the required information,
+     do NOT generate additional retrieval goals.
+   - DECOMPOSITION RULE:   Decompose work into explicit, verifiable goals based on information dependency,
+   not by default on URL count.
+        Prefer grouped retrieval goals when:
+        - a single source can answer multiple sub-questions
+        - multiple required facts are likely contained in the same document/page
+        - the exact URLs are not yet known
+   - DYNAMIC REGENERATION:
+       Regenerate goals only when newly discovered information creates
+       genuinely new dependencies, blockers, or independent tasks.
+
+       Prefer extending or refining existing retrieval goals over creating
+       additional fetch goals.
+
+       - Existing retrieved content MUST be treated as authoritative working context.
+
+       - Do NOT create:
+           * duplicate fetch goals
+           * semantically equivalent search goals
+           * "better source" retrieval goals
+           * confirmation retrieval goals
+
+         unless the prior retrieval explicitly failed or returned unusable content.
+
+       - Never create a new retrieval/search/fetch goal if existing artifacts
+         already contain information relevant to the active goal.
+
+       - Prefer synthesis goals over additional retrieval goals whenever
+         attached artifacts contain partially sufficient information.
+
+       - Retrieval goals are allowed ONLY when:
+           * required information is completely absent
+           * prior retrieval failed
+           * prior retrieval returned empty or malformed content
+
    - A file-creation goal is DONE only when the history shows a successful create_file
      tool call for that specific filename.
    - Never hallucinate completion. If uncertain, leave "done" as false.
@@ -69,6 +102,7 @@ No markdown fences. No prose. No comments. Pure JSON only.
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
+
 
 async def run_perception(
     user_query: str,
@@ -99,7 +133,9 @@ async def run_perception(
         goals_block = json.dumps(
             [g.model_dump(mode="json") for g in prior_goals], indent=2
         )
-        context_parts.append(f"## PRIOR GOALS (DO NOT REORDER OR RENAME)\n{goals_block}")
+        context_parts.append(
+            f"## PRIOR GOALS (DO NOT REORDER OR RENAME)\n{goals_block}"
+        )
     else:
         context_parts.append("## PRIOR GOALS\n(empty — generate fresh milestone list)")
 
@@ -111,19 +147,7 @@ async def run_perception(
     else:
         context_parts.append("## EXECUTION HISTORY\n(none — first iteration)")
 
-    art_ids = _collect_artifact_ids_from_history(history)
-    artifact_injection = ""
-    if art_ids:
-        blocks = []
-        for art_id in art_ids:
-            content = _load_artifact_content(art_id)
-            if content:
-                blocks.append(f"--- BEGIN {art_id} ---\n{content}\n--- END {art_id} ---")
-                logger.info("Force-attached artifact %s (%d chars)", art_id, len(content))
-        if blocks:
-            artifact_injection = "\n\n[ATTACHED ARTIFACT CONTENT]\n" + "\n\n".join(blocks)
-
-    user_content = "\n\n".join(context_parts) + artifact_injection
+    user_content = "\n\n".join(context_parts)
 
     payload = {
         "auto_route": "perception",
@@ -139,10 +163,8 @@ async def run_perception(
         },
     }
 
-    if artifact_injection:
-        payload["provider"] = "nvidia"
-
     import asyncio
+
     max_attempts = 3
     for attempt in range(max_attempts):
         try:
@@ -153,8 +175,10 @@ async def run_perception(
                 break  # Success
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (502, 503) and attempt < max_attempts - 1:
-                logger.warning(f"Gateway returned {exc.response.status_code}, cooling off for 25s (attempt {attempt+1}/{max_attempts})...")
-                await asyncio.sleep(25)
+                logger.warning(
+                    f"Gateway returned {exc.response.status_code}, cooling off for 60s (attempt {attempt + 1}/{max_attempts})..."
+                )
+                await asyncio.sleep(60)
                 continue
             logger.error("Perception gateway error: %s", exc)
             all_done = all(g.done for g in prior_goals) if prior_goals else False
@@ -178,7 +202,9 @@ async def run_perception(
         )
         return observation
     except Exception as exc:  # noqa: BLE001
-        logger.error("Perception: could not parse response (%s). Raw: %s", exc, content[:400])
+        logger.error(
+            "Perception: could not parse response (%s). Raw: %s", exc, content[:400]
+        )
         # Fall back to existing state — don't crash the loop
         all_done = all(g.done for g in prior_goals) if prior_goals else False
         return Observation(goals=prior_goals, all_done=all_done)
@@ -188,28 +214,6 @@ async def run_perception(
 # Helpers
 # ---------------------------------------------------------------------------
 
-ARTIFACTS_DIR = Path("state") / "artifacts"
-
-def _load_artifact_content(artifact_id: str) -> str | None:
-    if not artifact_id.startswith("art:"):
-        return None
-    hash_val = artifact_id[4:]
-    bin_path = ARTIFACTS_DIR / f"{hash_val}.bin"
-    try:
-        return bin_path.read_bytes().decode("utf-8", errors="replace")
-    except Exception as exc:
-        logger.warning("Could not load artifact %s: %s", artifact_id, exc)
-        return None
-
-def _collect_artifact_ids_from_history(history: list[str]) -> list[str]:
-    pattern = re.compile(r"art:[a-f0-9]{64}")
-    seen: set[str] = set()
-    for entry in history:
-        for match in pattern.finditer(entry):
-            seen.add(match.group())
-    return list(seen)
-
-# ---------------------------------------------------------------------------
 
 def _extract_content(data: dict[str, Any]) -> str:
     """
@@ -225,6 +229,7 @@ def _extract_content(data: dict[str, Any]) -> str:
     # Prefer pre-validated parsed object (structured output path)
     if isinstance(data.get("parsed"), dict):
         import json as _json
+
         return _json.dumps(data["parsed"])
     # Plain text response
     text = data.get("text", "")

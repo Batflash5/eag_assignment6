@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,67 @@ GATEWAY_URL = "http://localhost:8101/v1/chat"
 STATE_DIR = Path("state")
 ARTIFACTS_DIR = STATE_DIR / "artifacts"
 
+
+# ---------------------------------------------------------------------------
+# Synthesis keywords configuration (dynamic)
+# ---------------------------------------------------------------------------
+
+def _load_synthesis_keywords() -> list[str]:
+    """
+    Load synthesis keywords from configuration.
+    
+    Tries in order:
+    1. From environment variable SYNTHESIS_KEYWORDS (comma-separated)
+    2. From config file state/synthesis_keywords.json (JSON array)
+    3. Returns built-in defaults
+    """
+    # Try environment variable first
+    env_keywords = os.getenv("SYNTHESIS_KEYWORDS")
+    if env_keywords:
+        keywords = [kw.strip() for kw in env_keywords.split(",") if kw.strip()]
+        if keywords:
+            logger.info("Loaded synthesis keywords from environment: %d keywords", len(keywords))
+            return keywords
+    
+    # Try config file
+    config_file = STATE_DIR / "synthesis_keywords.json"
+    if config_file.exists():
+        try:
+            with open(config_file) as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    logger.info("Loaded synthesis keywords from config file: %d keywords", len(data))
+                    return data
+        except Exception as exc:
+            logger.warning("Could not load synthesis keywords from config: %s", exc)
+    
+    # Built-in defaults
+    defaults = [
+        "based on",
+        "select",
+        "identify",
+        "compare",
+        "analyze",
+        "extract",
+        "recommend",
+        "suitable",
+        "appropriate",
+        "most",
+        "best",
+        "using",
+        "given",
+        "synthesize",
+        "combine",
+        "evaluate",
+        "match",
+        "filter",
+    ]
+    logger.info("Using built-in synthesis keywords: %d keywords", len(defaults))
+    return defaults
+
+
+# Load keywords once at module startup
+SYNTHESIS_KEYWORDS = _load_synthesis_keywords()
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +110,20 @@ ARGUMENT EXTRACTION RULES (mandatory):
 - NEVER submit an empty arguments dict {} for any tool.
 - NEVER use placeholder strings. NEVER use artifact handles as argument values.
 
+ARTIFACT SUFFICIENCY RULE (CRITICAL):
+If attached artifacts, execution history, or memory contain enough information
+to produce a reasonable best-effort answer for the active goal,
+you MUST return a TERMINAL ANSWER.
+
+You are FORBIDDEN from calling tools merely to:
+- improve answer quality
+- obtain a more authoritative source
+- obtain a more specific version of existing data
+- confirm already available information
+- search for recommendations derivable from existing context
+
+Cross-artifact synthesis and reasoning MUST be performed locally.
+
 CONSTRAINTS (these are ABSOLUTE rules — no exceptions):
 1. When [ATTACHED ARTIFACT CONTENT] is present, first judge relevance:
    a. RELEVANT — the artifact(s) contain data that addresses the active goal (even partially
@@ -67,12 +143,31 @@ CONSTRAINTS (these are ABSOLUTE rules — no exceptions):
    → One create_file call per goal — never bundle multiple files into one call.
 3. NEVER submit an empty arguments dict {} for any tool.
 4. NEVER use artifact handles as argument values.
+5. Complete the goals one by one in the order they are presented.
+
+### GUIDELINES FOR TOOL CALLS:
+1. SPECIFICITY: Never use single-word search queries. Include locations, dates, and specific subjects.
+2. ENTITY RETENTION: If a goal mentions 'Tokyo' and 'Weather', the search query MUST contain both.
+3. TOOL SELECTION: Use 'fetch_url' for specific websites and 'web_search' for general discovery.
+4. MEMORY FIRST: For personal information (like birthdays), rely on the provided Memory context before using tools.
+
+### EXAMPLES:
+Goal: "Find the price of Bitcoin"
+Action: web_search(query="current Bitcoin price in USD")
+
+Goal: "What is the weather like?"
+Action: web_search(query="current weather forecast and temperature in [User's Location]")
+
+Goal: "Read the article at example.com/news"
+Action: fetch_url(url="https://example.com/news")
+
 """
 
 
 # ---------------------------------------------------------------------------
 # Force-Attach helpers
 # ---------------------------------------------------------------------------
+
 
 def _load_artifact_content(artifact_id: str) -> str | None:
     """
@@ -104,15 +199,26 @@ def _collect_artifact_ids_from_history(history: list[str]) -> list[str]:
     return list(seen)
 
 
+def _goal_needs_synthesis(goal_text: str) -> bool:
+    """
+    Heuristic to detect if a goal requires synthesis/analysis of prior results.
+    
+    Synthesis goals contain language from SYNTHESIS_KEYWORDS.
+    Action/retrieval goals like "fetch X", "create file Y", "search for Z" don't need artifacts.
+    """
+    goal_lower = goal_text.lower()
+    return any(keyword in goal_lower for keyword in SYNTHESIS_KEYWORDS)
+
+
 # ---------------------------------------------------------------------------
 # Tool schema builder
 # ---------------------------------------------------------------------------
 
 
-
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
+
 
 async def run_decision(
     active_goal: Goal,
@@ -133,35 +239,43 @@ async def run_decision(
     messages: list[dict[str, str]] = []
 
     # ------------------------------------------------------------------
-    # Force-Attach: always inject every artifact referenced in history.
-    # The decision model's system prompt instructs it to use attached
-    # content directly and avoid re-fetching — so attaching unconditionally
-    # is correct for both synthesis goals AND action goals, and eliminates
-    # the fragile static keyword gate that was here before.
+    # Force-Attach: conditionally inject artifacts based on goal type.
+    # Only attach if:
+    #   1. The goal explicitly requests artifacts (attach_artifact_id is set), OR
+    #   2. The goal text suggests synthesis/analysis (contains keywords like
+    #      "based on", "select", "identify", "compare", etc.)
+    #
+    # Action/retrieval goals like "Fetch X from URL" or "Search for Y" don't
+    # need artifacts, so we skip the overhead of loading and injecting them.
     # ------------------------------------------------------------------
     artifact_injection: str = ""
-    art_ids: list[str] = _collect_artifact_ids_from_history(history)
+    goal_needs_artifacts = _goal_needs_synthesis(active_goal.text) or active_goal.attach_artifact_id is not None
 
-    # Also honour any artifact the perception model explicitly pinned
-    if active_goal.attach_artifact_id:
-        art_ids.append(active_goal.attach_artifact_id)
+    if goal_needs_artifacts:
+        art_ids: list[str] = _collect_artifact_ids_from_history(history)
 
-    # Deduplicate
-    art_ids = list(dict.fromkeys(art_ids))
+        # Also honour any artifact the perception model explicitly pinned
+        if active_goal.attach_artifact_id:
+            art_ids.append(active_goal.attach_artifact_id)
 
-    if art_ids:
-        blocks: list[str] = []
-        for art_id in art_ids:
-            content = _load_artifact_content(art_id)
-            if content is not None:
-                blocks.append(
-                    f"--- BEGIN {art_id} ---\n{content}\n--- END {art_id} ---"
+        # Deduplicate
+        art_ids = list(dict.fromkeys(art_ids))
+
+        if art_ids:
+            blocks: list[str] = []
+            for art_id in art_ids:
+                content = _load_artifact_content(art_id)
+                if content is not None:
+                    blocks.append(
+                        f"--- BEGIN {art_id} ---\n{content}\n--- END {art_id} ---"
+                    )
+                    logger.info(
+                        "Force-attached artifact %s (%d chars)", art_id, len(content)
+                    )
+            if blocks:
+                artifact_injection = "\n\n[ATTACHED ARTIFACT CONTENT]\n" + "\n\n".join(
+                    blocks
                 )
-                logger.info("Force-attached artifact %s (%d chars)", art_id, len(content))
-        if blocks:
-            artifact_injection = (
-                "\n\n[ATTACHED ARTIFACT CONTENT]\n" + "\n\n".join(blocks)
-            )
 
     # ------------------------------------------------------------------
     # Build user message
@@ -185,7 +299,7 @@ async def run_decision(
     # immediately before the reminder to use them — prevents empty-arguments calls.
     extraction_reminder = (
         f"\n\n## ARGUMENT EXTRACTION REMINDER\n"
-        f"The active goal text is: \"{active_goal.text}\"\n"
+        f'The active goal text is: "{active_goal.text}"\n'
         f"Extract every concrete value from that text (URLs, search terms, file names, "
         f"amounts, currency codes, etc.) and populate the required tool arguments with them. "
         f"Do NOT submit an empty arguments dict."
@@ -203,11 +317,13 @@ async def run_decision(
 
     gateway_tools = []
     for tool in mcp_tools:
-        gateway_tools.append({
-            "name": tool.get("name", ""),
-            "description": tool.get("description", ""),
-            "input_schema": tool.get("inputSchema", tool.get("parameters", {})),
-        })
+        gateway_tools.append(
+            {
+                "name": tool.get("name", ""),
+                "description": tool.get("description", ""),
+                "input_schema": tool.get("inputSchema", tool.get("parameters", {})),
+            }
+        )
 
     payload = {
         "auto_route": "decision",
@@ -226,6 +342,7 @@ async def run_decision(
         payload["provider"] = "nvidia"
 
     import asyncio
+
     max_attempts = 3
     for attempt in range(max_attempts):
         try:
@@ -236,8 +353,10 @@ async def run_decision(
                 break  # Success
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (502, 503) and attempt < max_attempts - 1:
-                logger.warning(f"Gateway returned {exc.response.status_code}, cooling off for 25s (attempt {attempt+1}/{max_attempts})...")
-                await asyncio.sleep(25)
+                logger.warning(
+                    f"Gateway returned {exc.response.status_code}, cooling off for 60s (attempt {attempt + 1}/{max_attempts})..."
+                )
+                await asyncio.sleep(60)
                 continue
             logger.error("Decision gateway error: %s", exc)
             return DecisionOutput(
@@ -253,13 +372,39 @@ async def run_decision(
 
     tool_calls = data.get("tool_calls", [])
     text_content = data.get("text", "")
-    
+
+    # ------------------------------------------------------------------
+    # SYNTHESIS GOAL CONSTRAINT ENFORCEMENT
+    # If this is a synthesis goal with artifacts already attached, reject
+    # any tool calls and force the model to synthesize from existing data.
+    # This enforces the "ARTIFACT SUFFICIENCY RULE" from the system prompt.
+    # ------------------------------------------------------------------
+    is_synthesis_goal = _goal_needs_synthesis(active_goal.text)
+    has_artifacts = bool(artifact_injection)
+
+    if is_synthesis_goal and has_artifacts and tool_calls:
+        logger.warning(
+            "CONSTRAINT VIOLATION: Synthesis goal attempted tool call despite "
+            "artifacts being available. Forcing terminal answer from model response."
+        )
+        logger.info(
+            "Goal: %s | Attempted tool: %s | Forcing synthesis from artifacts instead.",
+            active_goal.text,
+            tool_calls[0].get("name", "unknown"),
+        )
+        # Reject the tool call and use text content as forced answer
+        tool_calls = []
+        if not text_content:
+            text_content = (
+                "[Synthesis constraint enforced: model attempted tool call despite "
+                "having artifacts. Synthesizing answer from existing data instead.]"
+            )
+
     if tool_calls:
         tc_data = tool_calls[0]
         try:
             tool_call_obj = ToolCall(
-                name=tc_data.get("name", ""),
-                arguments=tc_data.get("arguments", {})
+                name=tc_data.get("name", ""), arguments=tc_data.get("arguments", {})
             )
             decision = DecisionOutput(answer=None, tool_call=tool_call_obj)
         except Exception as exc:
@@ -273,12 +418,12 @@ async def run_decision(
 
     # Sanity check
     if not decision.answer and not decision.tool_call:
-        logger.warning("Decision returned neither answer nor tool_call — injecting error answer.")
+        logger.warning(
+            "Decision returned neither answer nor tool_call — injecting error answer."
+        )
         decision = DecisionOutput(
             answer="[Agent error: decision model returned empty output. Aborting this step.]",
             tool_call=None,
         )
     logger.info(f"Decision: {decision}")
     return decision
-
-
